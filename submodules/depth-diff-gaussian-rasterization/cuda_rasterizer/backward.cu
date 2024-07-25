@@ -353,6 +353,7 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
+	const float* view,
 	const float* proj,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
@@ -373,6 +374,8 @@ __global__ void preprocessCUDA(
 	// Taking care of gradients from the screenspace points
 	float4 m_hom = transformPoint4x4(m, proj);
 	float m_w = 1.0f / (m_hom.w + 0.0000001f);
+
+	float3 m_view = transformPoint4x3(m, view);
 
 	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means
 	// from rendering procedure
@@ -647,6 +650,7 @@ void BACKWARD::preprocess(
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
+		viewmatrix,
 		projmatrix,
 		campos,
 		(float3*)dL_dmean2D,
