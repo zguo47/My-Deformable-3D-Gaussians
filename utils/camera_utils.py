@@ -43,6 +43,8 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
 
+    resized_distance_image = np.expand_dims(cam_info.distance_image, axis=0)
+
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
 
@@ -54,7 +56,7 @@ def loadCam(args, id, cam_info, resolution_scale):
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id,
                   data_device=args.data_device if not args.load2gpu_on_the_fly else 'cpu', fid=cam_info.fid,
-                  depth=cam_info.depth)
+                  depth=resized_distance_image)
 
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):

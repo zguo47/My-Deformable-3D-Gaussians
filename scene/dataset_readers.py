@@ -632,7 +632,7 @@ def readPlenopticVideoDataset(path, eval, num_images, hold_id=[0]):
 def readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, color_intrinsics, depth_range, znear, zfar, args):
     cam_infos = []
 
-    for fid in tqdm(range(1, args.total_num_views), desc="Loading all views/frames"):
+    for fid in tqdm(range(args.total_num_views), desc="Loading all views/frames"):
         # Color camera
         R = np.transpose(color_extrinsics[fid, :3, :3]) # torf extrinsics is w2c
         T = color_extrinsics[fid, :3, 3]
@@ -717,23 +717,25 @@ def readToRFSceneInfo(path, eval, args, llffhold=8):
     cam_infos_unsorted = readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, color_intrinsics, depth_range, znear, zfar, args)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
-    if not args.dynamic and eval:
-        if args.train_views != "":
-            idx_train = [int(i) for i in args.train_views.split(",").strip()]
-            idx_test = [i for i in np.arange(args.total_num_views) if (i not in idx_train)] 
-            train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_train]
-            test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_test]
-        else:
-            train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
-            test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
-    else:
-        train_cam_infos = cam_infos
-        test_cam_infos = cam_infos
+    # if not args.dynamic and eval:
+    #     if args.train_views != "":
+    #         idx_train = [int(i) for i in args.train_views.split(",").strip()]
+    #         idx_test = [i for i in np.arange(args.total_num_views) if (i not in idx_train)] 
+    #         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_train]
+    #         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_test]
+    #     else:
+    #         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+    #         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    # else:
+    #     train_cam_infos = cam_infos
+    #     test_cam_infos = cam_infos
+    train_cam_infos = cam_infos
+    test_cam_infos = cam_infos
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
     if nerf_normalization['radius'] < 1e-6: # camera is fixed, for the synthetic debug cube scene
-        max_depth = np.max([depth_from_tof(train_cam_infos[i].tof_image, depth_range, args.phase_offset) for i in range(args.total_num_views)])
-        nerf_normalization['radius'] = max_depth * 1.1
+        # max_depth = np.max([depth_from_tof(train_cam_infos[i].tof_image, depth_range, args.phase_offset) for i in range(args.total_num_views)])
+        nerf_normalization['radius'] = 1
 
     # intrinsics, extrinsics = color_intrinsics + tof_intrinsics, np.concatenate([color_extrinsics, tof_extrinsics], axis=0)
     # poses = [np.linalg.inv(ext) for ext in extrinsics]

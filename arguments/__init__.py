@@ -77,10 +77,10 @@ class ModelParams(ParamGroup):
         self.t_multires = 4
 
         # ToRF dataset
-        self.dataset_type = "real"
-        self.total_num_views = 31
+        self.dataset_type = "mitsuba"
+        self.total_num_views = 60
         self.train_views = ""
-        self.total_num_spiral_views = 31
+        self.total_num_spiral_views = 60
 
         self.tof_image_width = 320
         self.tof_image_height = 240
@@ -138,6 +138,8 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0007
+
+        self.lambda_depth = 1.0
         super().__init__(parser, "Optimization Parameters")
     
     def extract(self, args):

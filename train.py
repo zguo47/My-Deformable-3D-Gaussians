@@ -22,6 +22,11 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from PIL import Image
+import numpy as np
+from scene.torf_utils import normalize_im_gt, normalize_im, to8b
+import imageio
+from matplotlib import cm
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -52,6 +57,24 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
     best_iteration = 0
     progress_bar = tqdm(range(opt.iterations), desc="Training progress")
     smooth_term = get_linear_noise_func(lr_init=0.1, lr_final=1e-15, lr_delay_mult=0.01, max_steps=20000)
+
+
+    # Create a directory for saving the images if it does not exist
+    # output_folder = "/fs/nexus-projects/video-depth-pose/videosfm/test/Deformable-3D-Gaussians/output/saved_images"
+    # os.makedirs(output_folder, exist_ok=True)
+
+    gt_depths = []
+
+    # First, gather all depth data to find global min and max
+    for view in scene.getTrainCameras():
+        gt_depth = view.depth.cpu().detach().numpy()[0]  
+        gt_depths.append(gt_depth)
+
+
+    os.makedirs(os.path.join(scene.model_path, f"tmp_debug_depth"), exist_ok=True)
+    os.makedirs(os.path.join(scene.model_path, f"tmp_debug_depth_gt"), exist_ok=True)
+    os.makedirs(os.path.join(scene.model_path, f"tmp_debug_depth_error"), exist_ok=True)
+
     for iteration in range(1, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -100,15 +123,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
         render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, dataset.is_6dof)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
-        # depth = render_pkg_re["depth"]
+        depth = render_pkg_re["depth"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
+        gt_depth = viewpoint_cam.depth.cuda()
         Ll1 = l1_loss(image, gt_image)
+        Ll1_d = l1_loss(depth, gt_depth)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        loss = loss + opt.lambda_depth * ((1.0 - opt.lambda_dssim) * Ll1_d + opt.lambda_dssim * (1.0 - ssim(depth, gt_depth)))
         loss.backward()
 
         iter_end.record()
+
+        if iteration <= opt.iterations and iteration % 100 == 0:           
+            rendered_depth = depth.cpu().detach().numpy()[0]
+            gt_depth_ = gt_depth.cpu().detach().numpy()[0]
+            rendered_depth_error = np.abs(gt_depth_ - rendered_depth)
+
+            rendered_depth = normalize_im_gt(rendered_depth, gt_depths)
+            rendered_depth_error = normalize_im(rendered_depth_error)
+            imageio.imwrite(os.path.join(scene.model_path, f"tmp_debug_depth", f"{iteration:05d}.png"), to8b(cm.magma(rendered_depth)))
+            imageio.imwrite(os.path.join(scene.model_path, f"tmp_debug_depth_gt", f"{iteration:05d}.png"), to8b(cm.magma(normalize_im_gt(gt_depth_, gt_depths))))
+            imageio.imwrite(os.path.join(scene.model_path, f"tmp_debug_depth_error", f"{iteration:05d}.png"), to8b(rendered_depth_error))
 
         if dataset.load2gpu_on_the_fly:
             viewpoint_cam.load2device('cpu')
