@@ -16,6 +16,7 @@ from typing import NamedTuple, Optional
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+from scene.torf_utils import get_camera_params, normalize_im_max, scale_image, calculateSceneBounds
 import numpy as np
 import json
 import imageio
@@ -23,23 +24,53 @@ from glob import glob
 import cv2 as cv
 from pathlib import Path
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import SH2RGB
+from utils.sh_utils import SH2RGB, RGB2SH, SH2PA, PA2SH
 from scene.gaussian_model import BasicPointCloud
 from utils.camera_utils import camera_nerfies_from_JSON
+from tqdm import tqdm
 
 
 class CameraInfo(NamedTuple):
+    # uid: int
+    # R: np.array
+    # T: np.array
+    # FovY: np.array
+    # FovX: np.array
+    # image: np.array
+    # image_path: str
+    # image_name: str
+    # width: int
+    # height: int
+    fid: float
     uid: int
+    # Color
     R: np.array
     T: np.array
     FovY: np.array
     FovX: np.array
+    image_name: str
     image: np.array
     image_path: str
-    image_name: str
     width: int
     height: int
-    fid: float
+    frame_id: Optional[int] = -1
+    # Time-of-Flight
+    R_tof: Optional[np.array] = None
+    T_tof: Optional[np.array] = None
+    FovY_tof: Optional[np.array] = None
+    FovX_tof: Optional[np.array] = None
+    tof_image_name: Optional[str] = ""
+    tof_image: Optional[np.array] = None
+    tof_image_path: Optional[str] = ""
+    distance_image_name: Optional[str] = ""     # Distance image (for synthetic scenes)
+    distance_image: Optional[np.array] = None
+    distance_image_path: Optional[str] = ""
+    tof_width: Optional[int] = -1
+    tof_height: Optional[int] = -1
+    # Others
+    znear: Optional[float] = 0.01
+    zfar: Optional[float] = 100.0
+    depth_range: Optional[float] = 100.0
     depth: Optional[np.array] = None
 
 
@@ -597,10 +628,247 @@ def readPlenopticVideoDataset(path, eval, num_images, hold_id=[0]):
     return scene_info
 
 
+# ToRF scenes
+def readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, color_intrinsics, depth_range, znear, zfar, args):
+    cam_infos = []
+
+    for fid in tqdm(range(1, args.total_num_views), desc="Loading all views/frames"): # add 1 for real world sequences
+        # Color camera
+        R = np.transpose(color_extrinsics[fid, :3, :3]) # torf extrinsics is w2c
+        T = color_extrinsics[fid, :3, 3]
+        FovY = 2 * np.arctan2(args.color_image_height, 2 * color_intrinsics[fid][1, 1]) # radian
+        FovX = 2 * np.arctan2(args.color_image_width, 2 * color_intrinsics[fid][0, 0])
+        
+        color_image_name = f"{fid:04d}"
+        color_image_path = os.path.join(path, "color", f"{color_image_name}.npy")
+        color_image = Image.fromarray(np.array(normalize_im_max(scale_image(np.load(color_image_path), args.color_scale_factor)) * 255.0, dtype=np.byte), "RGB")
+
+        # Time-of-Flight camera
+        R_tof = np.transpose(tof_extrinsics[fid, :3, :3])
+        T_tof = tof_extrinsics[fid, :3, 3]
+        FovY_tof = 2 * np.arctan2(args.tof_image_height, 2 * tof_intrinsics[fid][1, 1])
+        FovX_tof = 2 * np.arctan2(args.tof_image_width, 2 * tof_intrinsics[fid][0, 0])
+
+        tof_image_name = f"{fid:04d}"
+        tof_image_path = os.path.join(path, "tof", f"{tof_image_name}.npy")
+        tof_image = normalize_im_max(scale_image((np.load(tof_image_path)), args.tof_scale_factor))
+
+        # Get original tof distance image 
+        depth_image_name = f"{fid:04d}" 
+        depth_image_path = os.path.join(path, "depth", f"{depth_image_name}.npy")
+        depth_image = np.load(depth_image_path)
+
+        # Distance image (for synthetic scenes)        
+        distance_image_name = f"{(fid-1):05d}" 
+        distance_image_path = os.path.join(path, "distance", f"{distance_image_name}.npy")
+        distance_image = np.load(distance_image_path)
+        
+        scaling_factor = np.median(depth_image) / np.median(distance_image)
+        distance_image = distance_image * scaling_factor
+        print(distance_image)
+
+        cam_infos.append(CameraInfo(
+            uid=fid, fid=fid, frame_id=fid, 
+            # Color
+            R=R, T=T, FovY=FovY, FovX=FovX, 
+            image_name=color_image_name, image=color_image, image_path=color_image_path,
+            width=args.color_image_width*args.color_scale_factor, height=args.color_image_height*args.color_scale_factor,
+            # Time-of-Flight
+            R_tof=R_tof, T_tof=T_tof, FovY_tof=FovY_tof, FovX_tof=FovX_tof, 
+            tof_image_name=tof_image_name, tof_image=tof_image, tof_image_path=tof_image_path,
+            distance_image_name=distance_image_name, distance_image=distance_image, distance_image_path=distance_image_path,
+            tof_width=args.tof_image_width*args.tof_scale_factor, tof_height=args.tof_image_height*args.tof_scale_factor,
+            # Others
+            znear=znear, zfar=zfar, depth_range=depth_range))
+    return cam_infos
+
+def readToRFSpiralCameras(extrinsics, intrinsics, depth_range, znear, zfar, args):
+    cam_infos = []
+    
+    for fid in tqdm(range(args.total_num_spiral_views)):
+        R = np.transpose(extrinsics[fid, :3, :3])
+        T = extrinsics[fid, :3, 3]
+        FovY = 2 * np.arctan2(args.tof_image_height, 2 * intrinsics[fid][1, 1])
+        FovX = 2 * np.arctan2(args.tof_image_width, 2 * intrinsics[fid][0, 0])
+        
+        cam_infos.append(CameraInfo(uid=fid, frame_id=fid,
+                                    R=R, T=T, FovY=FovY, FovX=FovX, 
+                                    image_name=f"{fid:04d}", image=None, image_path=None,
+                                    width=args.color_image_width*args.color_scale_factor, height=args.color_image_height*args.color_scale_factor, 
+                                    znear=znear, zfar=zfar, depth_range=depth_range))
+    return cam_infos
+
+def readToRFSceneInfo(path, eval, args, llffhold=8):
+    # Load cameras
+    if args.dataset_type == "real":
+        cam_file_ending = 'mat'
+    else:
+        cam_file_ending = 'npy'
+
+    tof_intrinsics, tof_extrinsics = get_camera_params(
+        os.path.join(path, 'cams', f'tof_intrinsics.{cam_file_ending}'), 
+        os.path.join(path, 'cams', 'tof_extrinsics.npy'), 
+        args.total_num_views)
+    color_intrinsics, color_extrinsics = get_camera_params(
+        os.path.join(path, 'cams', f'color_intrinsics.{cam_file_ending}'), 
+        os.path.join(path, 'cams', 'color_extrinsics.npy'), 
+        args.total_num_views)
+    
+    depth_range_path = os.path.join(path, 'cams', 'depth_range.npy')
+    if os.path.exists(depth_range_path):
+        depth_range = np.load(depth_range_path).astype(np.float32)
+    else:
+        depth_range = np.array(args.depth_range).astype(np.float32)
+    znear = args.min_depth_fac * depth_range
+    zfar = args.max_depth_fac * depth_range
+    
+    # Create splits
+    cam_infos_unsorted = readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, color_intrinsics, depth_range, znear, zfar, args)
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    # if not args.dynamic and eval:
+    #     if args.train_views != "":
+    #         idx_train = [int(i) for i in args.train_views.split(",").strip()]
+    #         idx_test = [i for i in np.arange(args.total_num_views) if (i not in idx_train)] 
+    #         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_train]
+    #         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx in idx_test]
+    #     else:
+    #         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+    #         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    # else:
+    #     train_cam_infos = cam_infos
+    #     test_cam_infos = cam_infos
+    train_cam_infos = cam_infos
+    test_cam_infos = cam_infos
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    if nerf_normalization['radius'] < 1e-6: # camera is fixed, for the synthetic debug cube scene
+        # max_depth = np.max([depth_from_tof(train_cam_infos[i].tof_image, depth_range, args.phase_offset) for i in range(args.total_num_views)])
+        nerf_normalization['radius'] = 1
+
+    # intrinsics, extrinsics = color_intrinsics + tof_intrinsics, np.concatenate([color_extrinsics, tof_extrinsics], axis=0)
+    # poses = [np.linalg.inv(ext) for ext in extrinsics]
+    # poses = get_render_poses_spiral(-1.0, np.array([znear, zfar]), intrinsics, poses, nerf_normalization['radius'], N_views=args.total_num_spiral_views)
+    # spiral_exts = np.array([np.linalg.inv(pose) for pose in poses])
+    # spiral_cam_infos = readToRFSpiralCameras(spiral_exts, color_intrinsics, depth_range, znear, zfar, args)
+
+    # Initialize point cloud
+    ply_path = os.path.join(path, "points3d.ply")
+    if args.init_method == "random":
+        num_pts = args.num_points
+        print(f"Generating random point cloud ({num_pts})...")
+
+        # Init xyz
+        min_bounds, max_bounds = calculateSceneBounds(train_cam_infos, args)
+        xyz = np.random.uniform(min_bounds, max_bounds, (num_pts, 3))
+       
+        # Init color and phasor
+        shs_color = RGB2SH(np.ones((num_pts, 3)) * 0.5)
+        colors = SH2RGB(shs_color)
+        shs_phase = PA2SH(np.random.random((num_pts, 1)) * 2.0 * np.pi) # The phase will be used if use_view_dependent_phase = True
+        shs_amp = PA2SH(np.random.random((num_pts, 1)) * np.sum(np.square(xyz), axis=-1).reshape(num_pts, 1))
+        phases = SH2PA(shs_phase) 
+        amplitudes = SH2PA(shs_amp)
+        motion_mask = np.ones((num_pts, 1)).astype(bool) # All Gaussians are dynamic
+    else: # args.init_method == "phase"
+        canonical_tof_cam = train_cam_infos[args.canonical_frame_id]
+        tof_depth_height = math.ceil(args.tof_image_height / args.phase_resolution_stride * args.tof_scale_factor)
+        tof_depth_width = math.ceil(args.tof_image_width / args.phase_resolution_stride * args.tof_scale_factor)
+
+        # Pixel space
+        # Static Gaussians
+        xy_static = np.indices((tof_depth_height, tof_depth_width)).transpose(1, 2, 0).reshape(-1, 2).astype(np.float32)[:, ::-1] * args.phase_resolution_stride / args.tof_scale_factor
+        
+        # # Dynamic Gaussians
+        # xy_dynamic = np.empty((0, 2))
+        # if args.use_motion_mask: #TODO: Improve this part
+        #     y_dynamic, x_dynamic = np.where(canonical_tof_cam.motion_mask)
+        #     xy_dynamic_all = np.stack([x_dynamic, y_dynamic], axis=-1)
+        #     xy_dynamic = xy_dynamic_all[np.random.choice(xy_dynamic_all.shape[0], size=xy_dynamic_all.shape[0]//args.motion_mask_stride, replace=False)]
+        #     keep = np.ones_like(xy_static[:, 0]).astype(bool)
+        #     for row_idx in range(xy_static.shape[0]):
+        #         if np.any(np.all(xy_static[row_idx] == xy_dynamic, axis=1)):
+        #             keep[row_idx] = False
+        #     xy_static = xy_static[keep]
+        # xy_all = np.concatenate([xy_static, xy_dynamic], axis=0).astype(np.int16)
+        xy_all = xy_static.astype(np.int16)
+
+        num_pts = xy_all.shape[0]
+        print(f"Generating point cloud based on depth from the canonical frame ({num_pts})...")
+        
+        xyzw = np.empty((num_pts, 4))
+        view_mat = getWorld2View2(canonical_tof_cam.R_tof, canonical_tof_cam.T_tof)
+
+        # Normalize to [-WInMeters/2, WInMeters/2] and [-HInMeters/2, HInMeters/2]
+        WInMeters = canonical_tof_cam.znear * np.tan(canonical_tof_cam.FovX_tof / 2.0) * 2.0
+        HInMeters = canonical_tof_cam.znear * np.tan(canonical_tof_cam.FovY_tof / 2.0) * 2.0
+
+        xyzw[:, 0] = (xy_all[:, 0] * 2.0 / args.tof_image_width - 1.0) * WInMeters / 2.0
+        xyzw[:, 1] = (xy_all[:, 1] * 2.0 / args.tof_image_height - 1.0) * HInMeters / 2.0
+
+        # Distances to Light
+        z = depth_from_tof(canonical_tof_cam.tof_image[xy_all[:, 1], xy_all[:, 0], :], depth_range, args.phase_offset).reshape(num_pts, 1) 
+
+        # Camera space.
+        dists2pixInMeters = np.sqrt(np.square(xyzw[:, 0]) + np.square(xyzw[:, 1]) + np.square(canonical_tof_cam.znear))
+        np.true_divide(xyzw[:, 0], dists2pixInMeters, out=xyzw[:, 0]) 
+        np.true_divide(xyzw[:, 1], dists2pixInMeters, out=xyzw[:, 1])
+        np.multiply(xyzw[:, 0:1], z, out=xyzw[:, 0:1])
+        np.multiply(xyzw[:, 1:2], z, out=xyzw[:, 1:2])
+        xyzw[:, 2:3] = np.sqrt(np.square(z) - np.square(xyzw[:, 0:1]) - np.square(xyzw[:, 1:2]))
+        xyzw[:, 3:4] = np.ones((num_pts, 1))
+
+        # World space.
+        xyz = (np.linalg.inv(view_mat) @ xyzw.T).T[:, :3]
+
+        # Motion mask
+        motion_mask = np.ones((num_pts, 1)).astype(bool) # All Gaussians are dynamic
+        # if args.use_motion_mask: # Separate static (0) and dynamic (1) Gaussians
+        #     # motion_mask = np.concatenate([np.zeros_like(xy_static[:, 0]), np.ones_like(movable_xy[:, 0])], axis=0).astype(bool).reshape(num_pts, 1)
+        #     motion_mask = (xyz[:, 2] < 2.55).reshape(-1, 1)
+
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection='3d')
+        # scatter = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=motion_mask, cmap="winter")
+        # ax.set_xlabel('X')
+        # ax.set_ylabel('Y')
+        # ax.set_zlabel('Z')
+        # cbar = plt.colorbar(scatter, ax=ax)
+        # cbar.set_label('Mask Value')
+        # # plt.show()
+        # plt.savefig("w_mm_pcd_viz_init.png" if args.use_motion_mask else "wo_mm_pcd_viz_init.png")
+        # plt.close()
+
+        # Init color and phasor
+        shs_color = RGB2SH(np.ones((num_pts, 3)) * 0.5)
+        colors = SH2RGB(shs_color)
+        shs_phase = PA2SH(np.zeros((num_pts, 1)).astype(np.float32))
+        shs_amp = PA2SH(canonical_tof_cam.tof_image[xy_all[:, 1], xy_all[:, 0], 2].reshape(-1, 1) * np.square(z))
+        phases = SH2PA(shs_phase) 
+        amplitudes = SH2PA(shs_amp)
+
+    pcd = BasicPointCloud(points=xyz, colors=colors, normals=np.zeros((num_pts, 3)), phases=phases, amplitudes=amplitudes, motion_mask=motion_mask)
+
+    colors *= 255.0
+    storePly(ply_path, xyz, colors)
+
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,  # colmap dataset reader from official 3D Gaussian [https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/]
     "Blender": readNerfSyntheticInfo,  # D-NeRF dataset [https://drive.google.com/file/d/1uHVyApwqugXTFuIRRlE4abTW8_rrVeIK/view?usp=sharing]
     "DTU": readNeuSDTUInfo,  # DTU dataset used in Tensor4D [https://github.com/DSaurus/Tensor4D]
     "nerfies": readNerfiesInfo,  # NeRFies & HyperNeRF dataset proposed by [https://github.com/google/hypernerf/releases/tag/v0.1]
     "plenopticVideo": readPlenopticVideoDataset,  # Neural 3D dataset in [https://github.com/facebookresearch/Neural_3D_Video]
+    "ToRF": readToRFSceneInfo
 }

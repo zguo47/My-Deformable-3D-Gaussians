@@ -24,18 +24,42 @@ from gaussian_renderer import GaussianModel
 import imageio
 import numpy as np
 import time
+from matplotlib import cm
+from scene.torf_utils import normalize_im_gt, normalize_im, to8b
 
 
 def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, deform):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
+    depth_magma_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth_inferno")
+    depth_gt_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth_gt")
+    depth_v2_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth_v2")
+
+    data_root = "/fs/nexus-projects/video-depth-pose/videosfm/datasets/torf_data/copier_v2/depth"
+    v2_root = "/fs/nexus-projects/video-depth-pose/videosfm/datasets/torf_data/copier_v2/distance"
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
+    makedirs(depth_magma_path, exist_ok=True)
+    makedirs(depth_gt_path, exist_ok=True)
+    makedirs(depth_v2_path, exist_ok=True)
 
     t_list = []
+
+    gt_depths = []
+    v2_depths_wo_scale = []
+    v2_depths = []
+    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        gt_depth = np.load(os.path.join(data_root, '{0:04d}'.format(idx+1) + ".npy")) 
+        gt_depths.append(gt_depth)
+
+        v2_depth = np.load(os.path.join(v2_root, '{0:05d}'.format(idx) + ".npy")) 
+        v2_depths_wo_scale.append(v2_depth)
+        scaling_factor = np.median(gt_depth) / np.median(v2_depth)
+        v2_depth = v2_depth * scaling_factor
+        v2_depths.append(v2_depth)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         if load2gpu_on_the_fly:
@@ -47,12 +71,21 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
         depth = results["depth"]
+
+        rendered_depth = normalize_im_gt(depth.cpu().detach().numpy()[0], v2_depths)
+        gt_depth = np.load(os.path.join(data_root, '{0:04d}'.format(idx+1) + ".npy")) 
+        v2_depth = np.load(os.path.join(v2_root, '{0:05d}'.format(idx) + ".npy")) 
+
         depth = depth / (depth.max() + 1e-5)
 
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(idx) + ".png"))
+        
+        imageio.imwrite(os.path.join(depth_magma_path, '{0:05d}'.format(idx) + ".png"), to8b(cm.inferno(rendered_depth)))
+        imageio.imwrite(os.path.join(depth_gt_path, '{0:05d}'.format(idx) + ".png"), to8b(cm.inferno(normalize_im_gt(gt_depth, gt_depths))))
+        imageio.imwrite(os.path.join(depth_v2_path, '{0:05d}'.format(idx) + ".png"), to8b(cm.inferno(normalize_im_gt(v2_depth, v2_depths_wo_scale))))
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         fid = view.fid

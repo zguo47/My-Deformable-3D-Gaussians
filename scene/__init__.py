@@ -59,6 +59,9 @@ class Scene:
         elif os.path.exists(os.path.join(args.source_path, "transforms.json")):
             print("Found calibration_full.json, assuming Dynamic-360 data set!")
             scene_info = sceneLoadTypeCallbacks["dynamic360"](args.source_path)
+        elif os.path.exists(os.path.join(args.source_path, "tof")):
+            print("Found ToF phasors folder, assuming color and/or phasor dataset")
+            scene_info = sceneLoadTypeCallbacks["ToRF"](args.source_path, args.eval, args)
         else:
             assert False, "Could not recognize scene type!"
 

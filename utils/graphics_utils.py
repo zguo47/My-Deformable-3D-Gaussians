@@ -13,12 +13,16 @@ import torch
 import math
 import numpy as np
 from typing import NamedTuple
+from typing import Optional
 
 
 class BasicPointCloud(NamedTuple):
     points: np.array
     colors: np.array
     normals: np.array
+    phases: Optional[np.array] = None
+    amplitudes: Optional[np.array] = None
+    motion_mask: Optional[np.array] = None # Motion mask. Separates static (0) and dynamic (1) Gaussians 
 
 
 def geom_transform_points(points, transf_matrix):
@@ -82,3 +86,25 @@ def fov2focal(fov, pixels):
 
 def focal2fov(focal, pixels):
     return 2 * math.atan(pixels / (2 * focal))
+
+def phasor2real_img_amp(phasor):
+    '''
+    Phasor = H x W x 3 --> Real, Imag, Amp
+    Return: red (positive), blue (negative)
+    '''
+    real, imaginary = phase2real_img(phasor[:, :, :2])
+    return real, imaginary, phasor[:, :, 2]
+
+def phase2real_img(phase):
+    real = np.tile((phase[:, :, 0])[:, :, np.newaxis], (1, 1, 3))
+    real[:, :, 0][real[:, :, 0] <= 0] = 0.0
+    real[:, :, 2][real[:, :, 2] >= 0] = 0.0
+    real[:, :, 2] = -real[:, :, 2]
+    real[:, :, 1] = 0.0
+
+    imaginary = np.tile((phase[:, :, 1])[:, :, np.newaxis], (1, 1, 3))
+    imaginary[:, :, 0][imaginary[:, :, 0] <= 0] = 0.0
+    imaginary[:, :, 2][imaginary[:, :, 2] >= 0] = 0.0
+    imaginary[:, :, 2] = -imaginary[:, :, 2]
+    imaginary[:, :, 1] = 0.0
+    return real, imaginary

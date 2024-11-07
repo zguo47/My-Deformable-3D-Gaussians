@@ -60,6 +60,48 @@ class ModelParams(ParamGroup):
         self.load2gpu_on_the_fly = False
         self.is_blender = False
         self.is_6dof = False
+
+        # Dynamic model
+        self.dynamic = False      
+        self.dynamic_model = "deform" # or "per_frame"
+        self.canonical_frame_id = 0
+        self.shuffle_frames = False # Set True if "per_frame"
+
+        self.view_start = 1 # dynamic = 1, static = 0.
+        self.num_views = 1
+        self.total_num_views = 1
+
+        self.D = 6
+        self.W = 64
+        self.xyz_multires = 6
+        self.t_multires = 4
+
+        # ToRF dataset
+        self.dataset_type = "real" # or "mitsuba"
+        self.total_num_views = 31 # add 1 for real world sequences
+        self.train_views = ""
+        self.total_num_spiral_views = 31
+
+        self.tof_image_width = 320
+        self.tof_image_height = 240
+        self.tof_scale_factor = 1.0
+
+        self.color_image_width = 320
+        self.color_image_height = 240
+        self.color_scale_factor = 1.0
+        
+        self.min_depth_fac = 0.05
+        self.max_depth_fac = 0.55
+        self.depth_range = 16.0 # c/f, twice the unambiguous range of the ToF sensor
+        self.phase_offset = 0.0
+
+        self.use_view_dependent_phase = False
+
+        self.init_method = "random" # or "phase"
+        self.num_points = 10_000 
+        self.phase_resolution_stride = 20
+        self.initial_opacity = 0.1
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -78,13 +120,13 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 40_000
+        self.iterations = 30_000
         self.warm_up = 3_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
-        self.deform_lr_max_steps = 40_000
+        self.deform_lr_max_steps = 30_000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.001
@@ -96,7 +138,27 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0007
+
+        self.lambda_depth = 1.0
         super().__init__(parser, "Optimization Parameters")
+    
+    def extract(self, args):
+        g = super().extract(args)
+        if args.dynamic:
+            # if args.dynamic_model == "per_frame":
+            #     g.iterations = g.dynamic_first_iterations + (dataset_args.num_views - 1) * g.dynamic_rest_iterations
+            #     g.position_lr_max_steps = [g.dynamic_first_iterations] + [g.dynamic_rest_iterations] * (dataset_args.num_views - 1)
+
+            if args.dynamic_model == "deform":
+                # g.iterations = g.warm_up + g.adaptive_step_iterations * dataset_args.num_views // (g.adaptive_step * 2)
+                
+                g.position_lr_max_steps = [g.warm_up] + [g.densify_until_iter - g.warm_up] + [g.iterations - g.densify_until_iter]
+                # g.position_lr_max_steps = [g.warm_up] + [g.adaptive_step_iterations] * (dataset_args.num_views // (g.adaptive_step * 2))
+        else:
+            g.position_lr_max_steps = g.iterations
+            
+            g.densify_until_iter = g.iterations // 2
+        return g
 
 
 def get_combined_args(parser: ArgumentParser):
