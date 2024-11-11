@@ -632,7 +632,7 @@ def readPlenopticVideoDataset(path, eval, num_images, hold_id=[0]):
 def readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, color_intrinsics, depth_range, znear, zfar, args):
     cam_infos = []
 
-    for fid in tqdm(range(1, args.total_num_views), desc="Loading all views/frames"): # add 1 for real world sequences
+    for fid in tqdm(range(0, args.total_num_views, 4), desc="Loading all views/frames"): # add 1 for real world sequences, 4 for quad
         # Color camera
         R = np.transpose(color_extrinsics[fid, :3, :3]) # torf extrinsics is w2c
         T = color_extrinsics[fid, :3, 3]
@@ -659,13 +659,14 @@ def readToRFCameras(path, tof_extrinsics, tof_intrinsics, color_extrinsics, colo
         depth_image = np.load(depth_image_path)
 
         # Distance image (for synthetic scenes)        
-        distance_image_name = f"{(fid-1):05d}" 
-        distance_image_path = os.path.join(path, "distance", f"{distance_image_name}.npy")
+        # distance_image_name = f"{(fid-1):05d}" 
+        distance_image_name = f"{(fid):04d}" 
+        # distance_image_path = os.path.join(path, "distance", f"{distance_image_name}.npy")
+        distance_image_path = os.path.join(path, "synthetic_depth", f"{distance_image_name}.npy")
         distance_image = np.load(distance_image_path)
         
         scaling_factor = np.median(depth_image) / np.median(distance_image)
         distance_image = distance_image * scaling_factor
-        print(distance_image)
 
         cam_infos.append(CameraInfo(
             uid=fid, fid=fid, frame_id=fid, 
@@ -702,6 +703,8 @@ def readToRFSceneInfo(path, eval, args, llffhold=8):
     # Load cameras
     if args.dataset_type == "real":
         cam_file_ending = 'mat'
+    elif args.dataset_type == "quad":
+        cam_file_ending = 'npy'
     else:
         cam_file_ending = 'npy'
 

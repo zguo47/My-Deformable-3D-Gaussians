@@ -77,10 +77,10 @@ class ModelParams(ParamGroup):
         self.t_multires = 4
 
         # ToRF dataset
-        self.dataset_type = "real" # or "mitsuba"
-        self.total_num_views = 31 # add 1 for real world sequences
+        self.dataset_type = "quad" # or "mitsuba" or "real"
+        self.total_num_views = 60 # add 1 for real world sequences
         self.train_views = ""
-        self.total_num_spiral_views = 31
+        self.total_num_spiral_views = 60
 
         self.tof_image_width = 320
         self.tof_image_height = 240

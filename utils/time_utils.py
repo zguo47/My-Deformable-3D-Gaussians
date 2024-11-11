@@ -83,11 +83,11 @@ class DeformNetwork(nn.Module):
         #             nn.Linear(256, 256), nn.ReLU(inplace=True),
         #             nn.Linear(256, self.time_out))
 
-        # self.linear = nn.ModuleList(
-        #     [nn.Linear(xyz_input_ch + self.time_out, W)] + [
-        #         nn.Linear(W, W) if i not in self.skips else nn.Linear(W + xyz_input_ch + self.time_out, W)
-        #         for i in range(D - 1)]
-        # )
+            self.linear = nn.ModuleList(
+            [nn.Linear(xyz_input_ch + self.time_out, W)] + [
+                nn.Linear(W, W) if i not in self.skips else nn.Linear(W + xyz_input_ch + self.time_out, W)
+                for i in range(D - 1)]
+        )
 
         else:
             self.linear = nn.ModuleList(
